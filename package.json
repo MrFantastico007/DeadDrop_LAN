@@ -1,0 +1,16 @@
+{
+  "name": "deaddrop-offline",
+  "version": "1.0.0",
+  "description": "Offline LAN / Portable USB Edition of DeadDrop",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "compression": "^1.8.1",
+    "cors": "^2.8.5",
+    "express": "^4.18.2",
+    "multer": "^1.4.5-lts.1",
+    "socket.io": "^4.7.4"
+  }
+}
