@@ -1,13 +1,42 @@
 {
   "messages": [
     {
-      "_id": "1771488521959",
-      "roomCode": "VDHZ3A",
+      "_id": "1755444349100j9q",
+      "roomCode": "LOBBY",
       "type": "file",
-      "content": "giyu.jpeg",
-      "fileUrl": "/uploads/1771488521952-843923873.jpeg",
-      "publicId": "1771488521952-843923873.jpeg",
-      "createdAt": "2026-02-19T08:08:41.959Z"
+      "content": "MySQL_Assignment_QA.txt",
+      "fileUrl": "/uploads/MySQL_Assignment_QA.txt",
+      "publicId": "MySQL_Assignment_QA.txt",
+      "createdAt": "2025-08-17T15:25:49.101Z"
+    },
+    {
+      "_id": "175544434916060v",
+      "roomCode": "LOBBY",
+      "type": "file",
+      "content": "MySQL_Assignment_QA2.txt",
+      "fileUrl": "/uploads/MySQL_Assignment_QA2.txt",
+      "publicId": "MySQL_Assignment_QA2.txt",
+      "createdAt": "2025-08-17T15:25:49.160Z"
     }
-  ]
+  ],
+  "permissions": {
+    "admins": [
+      "user-K3T0LI",
+      "user-4B8WI2",
+      "user-VRQKTY",
+      "user-LVUURQ",
+      "user-K5OORK",
+      "user-PF5NCH"
+    ],
+    "editors": [],
+    "blocked": [
+      "user-6EPFI0",
+      "user-CCKMWB",
+      "user-29SJGM",
+      "user-HNJ34N"
+    ],
+    "conversers": [
+      "user-H3MJP4"
+    ]
+  }
 }

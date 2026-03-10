@@ -1,14 +1,33 @@
 import React, { useState, useEffect, useRef } from 'react';
 import io from 'socket.io-client';
 import axios from 'axios';
-import { Send, Paperclip, Copy, Trash2, FileText, Download, Check, WifiOff, Github, Star } from 'lucide-react';
+import { Send, Paperclip, Copy, Trash2, FileText, Download, Check, WifiOff, Github, Shield, X, ShieldAlert, UserCheck, UserX, Eye, MessageSquare, QrCode } from 'lucide-react';
+import { QRCodeSVG } from 'qrcode.react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 // Use relative path for production (same origin)
 const ENDPOINT = "";
 const ROOM_CODE = "LOBBY"; // Single shared room for everyone
 
+const getDeviceId = () => {
+    let storedId = localStorage.getItem('deaddrop_device_id');
+    if (!storedId) {
+        storedId = 'user-' + Math.random().toString(36).substring(2, 8).toUpperCase();
+        localStorage.setItem('deaddrop_device_id', storedId);
+    }
+    return storedId;
+};
+
 const Home = () => {
+    const [deviceId] = useState(() => getDeviceId());
+    const [userRole, setUserRole] = useState('viewer');
+    const [isAdminModalOpen, setIsAdminModalOpen] = useState(false);
+    const [adminInputCode, setAdminInputCode] = useState('');
+    const [activeUsers, setActiveUsers] = useState([]);
+    const [blockedUsers, setBlockedUsers] = useState([]);
+    const [isQRModalOpen, setIsQRModalOpen] = useState(false);
+    const [serverUrl, setServerUrl] = useState('');
+    
     const [messages, setMessages] = useState([]);
     const [newMessage, setNewMessage] = useState('');
     const [file, setFile] = useState(null);
@@ -22,6 +41,23 @@ const Home = () => {
 
     // Setup Socket.io connection and listeners
     useEffect(() => {
+        const fetchMessages = async () => {
+            try {
+                const res = await axios.post(`${ENDPOINT}/api/room/join`, { roomCode: ROOM_CODE, deviceId });
+                if (res.data.messages) {
+                    setMessages(res.data.messages);
+                }
+                if (res.data.role && res.data.role !== 'admin') {
+                    setUserRole(res.data.role);
+                }
+                if (res.data.serverUrl) {
+                    setServerUrl(res.data.serverUrl);
+                }
+            } catch (err) {
+                console.error("Failed to join room/fetch messages", err);
+            }
+        };
+
         const newSocket = io(ENDPOINT, {
             reconnectionAttempts: 5,
             timeout: 10000,
@@ -30,7 +66,14 @@ const Home = () => {
 
         newSocket.on('connect', () => {
             setIsConnected(true);
-            newSocket.emit('join_room', ROOM_CODE);
+            newSocket.emit('join_room', { roomCode: ROOM_CODE, deviceId });
+            // Fetch messages on every connection/reconnection to ensure sync
+            fetchMessages();
+
+            // Auto-join admin channel if already known as admin locally
+            if (userRole === 'admin') {
+                newSocket.emit('join_admin_channel', deviceId);
+            }
         });
 
         newSocket.on('disconnect', () => {
@@ -42,18 +85,27 @@ const Home = () => {
              setIsConnected(false);
         });
 
-        // Load initial message history
-        const fetchMessages = async () => {
-            try {
-                const res = await axios.post(`${ENDPOINT}/api/room/join`, { roomCode: ROOM_CODE });
-                if (res.data.messages) {
-                    setMessages(res.data.messages);
-                }
-            } catch (err) {
-                console.error("Failed to join room/fetch messages", err);
+        // Admin & Security Listeners
+        newSocket.on('access_denied', (data) => {
+            if(data.reason === 'blocked') setUserRole('blocked');
+        });
+
+        newSocket.on('role_update', (data) => {
+            if (data.targetId === deviceId) {
+                if (data.action === 'block') setUserRole('blocked');
+                if (data.action === 'editor') setUserRole('editor');
+                if (data.action === 'converser') setUserRole('converser');
+                if (data.action === 'reset') setUserRole('viewer');
             }
-        };
-        fetchMessages();
+        });
+
+        newSocket.on('active_users_update', (users) => {
+            setActiveUsers(users);
+        });
+
+        newSocket.on('blocked_users_update', (blockedIds) => {
+            setBlockedUsers(blockedIds);
+        });
 
         // Real-time event listeners
         newSocket.on('receive_message', (message) => {
@@ -65,7 +117,7 @@ const Home = () => {
         });
 
         return () => newSocket.close();
-    }, []);
+    }, [deviceId, userRole]);
 
     // Scroll to bottom when new messages arrive
     useEffect(() => {
@@ -83,7 +135,7 @@ const Home = () => {
 
         setIsSending(true);
         try {
-            const messageData = { roomCode: ROOM_CODE, type: 'text', content: newMessage };
+            const messageData = { roomCode: ROOM_CODE, type: 'text', content: newMessage, deviceId };
             await axios.post(`${ENDPOINT}/api/message`, messageData);
             setNewMessage('');
         } catch (err) {
@@ -111,7 +163,8 @@ const Home = () => {
                 type: 'file',
                 fileUrl: uploadRes.data.fileUrl,
                 publicId: uploadRes.data.publicId,
-                content: file.name
+                content: file.name,
+                deviceId
             };
 
             await axios.post(`${ENDPOINT}/api/message`, messageData);
@@ -128,18 +181,78 @@ const Home = () => {
     const handleDelete = async (id) => {
         if (!window.confirm("Delete this message/file permanently?")) return;
         try {
-            await axios.delete(`${ENDPOINT}/api/message/${id}`);
+            await axios.delete(`${ENDPOINT}/api/message/${id}`, { headers: { deviceid: deviceId } });
         } catch (err) {
             console.error("Delete failed", err);
-            alert("Delete failed.");
+            alert("Delete failed. You might not have permission.");
         }
     };
 
     const handleCopy = (content, id) => {
-        navigator.clipboard.writeText(content);
-        setCopiedId(id);
-        setTimeout(() => setCopiedId(null), 2000);
+        if (navigator.clipboard && window.isSecureContext) {
+            navigator.clipboard.writeText(content);
+            setCopiedId(id);
+            setTimeout(() => setCopiedId(null), 2000);
+        } else {
+            // Fallback for HTTP LAN connections
+            const textArea = document.createElement("textarea");
+            textArea.value = content;
+            textArea.style.position = "absolute";
+            textArea.style.left = "-999999px";
+            document.body.prepend(textArea);
+            textArea.select();
+            try {
+                document.execCommand('copy');
+                setCopiedId(id);
+                setTimeout(() => setCopiedId(null), 2000);
+            } catch (error) {
+                console.error(error);
+            } finally {
+                textArea.remove();
+            }
+        }
     };
+
+    const handleAdminLogin = async (e) => {
+        e.preventDefault();
+        try {
+            const res = await axios.post(`${ENDPOINT}/api/admin/login`, { adminCode: adminInputCode, deviceId });
+            if (res.data.success) {
+                setUserRole('admin');
+                setIsAdminModalOpen(false);
+                setAdminInputCode('');
+                if (socket) socket.emit('join_admin_channel', deviceId);
+                // Fetch initial blocked list
+                const blockedRes = await axios.get(`${ENDPOINT}/api/admin/blocked`, { headers: { deviceid: deviceId } });
+                if (blockedRes.data.success) setBlockedUsers(blockedRes.data.success.blocked || blockedRes.data.blocked);
+            }
+        } catch (err) {
+            alert('Invalid Admin Code');
+        }
+    };
+
+    const handleRoleChange = async (targetId, action) => {
+        // action can be: 'editor', 'block', 'reset' (viewer)
+        try {
+            await axios.post(`${ENDPOINT}/api/admin/role`, { targetId, action }, { headers: { deviceid: deviceId } });
+        } catch (err) {
+            console.error(err);
+            alert("Action failed.");
+        }
+    };
+
+
+    if (userRole === 'blocked') {
+        return (
+            <div className="h-[100dvh] flex items-center justify-center bg-neo-pink text-neo-black font-body">
+                <div className="neo-card text-center space-y-4 max-w-sm mx-auto">
+                    <ShieldAlert size={64} className="mx-auto" />
+                    <h1 className="text-3xl font-display uppercase tracking-wider">Access Denied</h1>
+                    <p className="font-bold">You have been blocked from dropping files by the host.</p>
+                </div>
+            </div>
+        );
+    }
 
     return (
         <div className="h-[100dvh] flex flex-col bg-neo-white text-neo-black font-body overflow-hidden relative">
@@ -150,18 +263,39 @@ const Home = () => {
             {/* Header */}
             <header className="flex-none p-4 flex items-center justify-between border-b-4 border-black bg-white z-20 shadow-sm relative overflow-visible">
                 <div className="flex items-center gap-4">
+                    <button onClick={() => setIsAdminModalOpen(true)} className="p-2 border-2 border-transparent hover:border-black active:translate-y-1 transition-all">
+                        <Shield size={24} className={userRole === 'admin' ? "text-neo-blue" : "text-gray-400"} />
+                    </button>
                     <div className="flex flex-col relative group">
                          {/* Mascot Peeking from Right */}
                          <img 
                             src="/character.png" 
                             alt="Mascot"
-                            className="absolute left-full top-1/2 -translate-y-1/2 ml-2 w-12 object-contain z-50 animate-bounce" 
+                            className="absolute -top-4 left-[calc(100%+2px)] md:top-1/2 md:-translate-y-1/2 md:left-[calc(100%+10px)] w-8 md:w-12 object-contain z-50 animate-bounce" 
                         />
                         <h1 className="text-2xl md:text-3xl font-display uppercase tracking-wider leading-none z-10 relative px-2">DEAD DROP</h1>
                         <div className="flex items-center gap-2 mt-1 px-2">
                             <span className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`}></span>
                             <span className="text-xs font-bold uppercase tracking-widest">{isConnected ? 'ONLINE' : 'OFFLINE'}</span>
                         </div>
+                    </div>
+                </div>
+                
+                <div className="flex items-center gap-1 md:gap-2 ml-auto">
+                    {/* QR Share Button */}
+                    <button 
+                        onClick={() => setIsQRModalOpen(true)}
+                        className="p-2 border-2 border-dashed border-gray-400 hover:border-black hover:bg-gray-100 transition-all flex items-center gap-1 group"
+                        title="Share Connection QR"
+                    >
+                        <QrCode size={18} className="text-gray-500 group-hover:text-black" />
+                        <span className="hidden sm:inline text-[8px] md:text-[10px] font-black uppercase tracking-widest text-gray-400 group-hover:text-black">Share</span>
+                    </button>
+
+                    {/* Device ID Display for Users */}
+                    <div className="flex items-center gap-1 md:gap-2 border-2 border-dashed border-gray-400 p-1 md:p-2">
+                        <span className="text-[8px] md:text-[10px] font-bold text-gray-400 uppercase tracking-widest leading-none">Your<br />ID</span>
+                        <span className="font-mono text-sm md:text-lg font-black bg-gray-100 px-1 md:px-2 py-1 leading-none">{deviceId}</span>
                     </div>
                 </div>
             </header>
@@ -172,6 +306,109 @@ const Home = () => {
                     CONNECTION LOST - ATTEMPTING TO RECONNECT...
                 </div>
             )}
+
+            {/* Admin Modal */}
+            <AnimatePresence>
+                {isAdminModalOpen && (
+                    <motion.div 
+                        initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                        className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"
+                    >
+                        <motion.div 
+                            initial={{ scale: 0.9, y: 20 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.9, y: 20 }}
+                            className="bg-white border-4 border-black p-6 w-full max-w-md shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] flex flex-col max-h-[80vh]"
+                        >
+                            <div className="flex justify-between items-center mb-6 border-b-4 border-black pb-2">
+                                <h2 className="text-2xl font-display uppercase tracking-wider flex items-center gap-2">
+                                    <Shield size={24} /> Admin Panel
+                                </h2>
+                                <button onClick={() => setIsAdminModalOpen(false)} className="hover:text-red-500 hover:scale-110 active:scale-95 transition-all">
+                                    <X size={24} strokeWidth={3} />
+                                </button>
+                            </div>
+
+                            {userRole !== 'admin' ? (
+                                <form onSubmit={handleAdminLogin} className="flex gap-2">
+                                    <input 
+                                        type="text" 
+                                        value={adminInputCode}
+                                        onChange={e => setAdminInputCode(e.target.value)}
+                                        placeholder="Enter Server Admin Code..."
+                                        className="flex-1 neo-input text-lg tracking-widest"
+                                    />
+                                    <button type="submit" className="neo-btn bg-neo-yellow px-4">Login</button>
+                                </form>
+                            ) : (
+                                <div className="overflow-y-auto flex-1 space-y-3 pr-2">
+                                    <p className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-4">Active Devices</p>
+                                    {activeUsers.map(u => (
+                                        <div key={u.deviceId} className="flex items-center justify-between border-2 border-black p-2 bg-neo-off-white">
+                                            <div className="flex items-center gap-2">
+                                                <div className="w-8 h-8 flex items-center justify-center bg-black text-white font-mono text-xs font-bold border-2 border-black">
+                                                    {u.deviceId.split('-')[1]?.substring(0, 2) || (u.deviceId.substring(0,2).toUpperCase())}
+                                                </div>
+                                                <div className="flex flex-col">
+                                                    <span className="font-mono text-sm font-bold flex items-center gap-2">
+                                                        {u.deviceId} {u.deviceId === deviceId && "(You)"}
+                                                        <span className={`text-[10px] px-1 py-0.5 uppercase tracking-wider ${u.role === 'admin' ? 'bg-neo-yellow' : u.role === 'editor' ? 'bg-neo-green text-black' : u.role === 'converser' ? 'bg-neo-blue text-white' : u.role === 'viewer' ? 'bg-gray-200 text-gray-500' : 'bg-neo-pink text-white'}`}>
+                                                            {u.role}
+                                                        </span>
+                                                    </span>
+                                                    <span className="text-[10px] text-gray-500 font-mono">{u.ip}</span>
+                                                </div>
+                                            </div>
+                                            
+                                            {u.deviceId !== deviceId && (
+                                                <div className="flex gap-2">
+                                                    {u.role !== 'viewer' && (
+                                                        <button onClick={() => handleRoleChange(u.deviceId, 'reset')} className="p-1 border-2 border-black hover:bg-gray-200 active:translate-y-1 bg-white" title="Make Viewer (Strict Read-Only)">
+                                                            <Eye size={16} />
+                                                        </button>
+                                                    )}
+                                                    {u.role !== 'converser' && (
+                                                        <button onClick={() => handleRoleChange(u.deviceId, 'converser')} className="p-1 border-2 border-black hover:bg-neo-blue active:translate-y-1 bg-white text-black hover:text-white" title="Make Converser (Can Text)">
+                                                            <MessageSquare size={16} />
+                                                        </button>
+                                                    )}
+                                                    {u.role !== 'editor' && (
+                                                        <button onClick={() => handleRoleChange(u.deviceId, 'editor')} className="p-1 border-2 border-black hover:bg-neo-green active:translate-y-1 bg-white" title="Make Editor (Can Text & Delete)">
+                                                            <UserCheck size={16} />
+                                                        </button>
+                                                    )}
+                                                    <button onClick={() => handleRoleChange(u.deviceId, 'block')} className="p-1 border-2 border-black hover:bg-neo-pink active:translate-y-1 bg-white" title="Block Device">
+                                                        <UserX size={16} />
+                                                    </button>
+                                                </div>
+                                            )}
+                                        </div>
+                                    ))}
+                                    {activeUsers.length === 0 && <div className="text-center font-bold text-sm text-gray-400 py-4">No active devices (Waiting for sync)</div>}
+
+                                    {/* Blocked Devices Section */}
+                                    {blockedUsers.length > 0 && (
+                                        <>
+                                            <p className="text-xs font-bold text-gray-400 uppercase tracking-widest mt-6 mb-4 pt-4 border-t-2 border-gray-200">Blocked Devices</p>
+                                            {blockedUsers.map(badId => (
+                                                <div key={badId} className="flex items-center justify-between border-2 border-neo-pink p-2 bg-pink-50">
+                                                    <div className="flex items-center gap-2 text-neo-pink font-mono text-sm font-bold opacity-75">
+                                                        <ShieldAlert size={16} /> {badId}
+                                                    </div>
+                                                    <button 
+                                                        onClick={() => handleRoleChange(badId, 'reset')} 
+                                                        className="px-3 py-1 border-2 border-black bg-white hover:bg-neo-yellow active:translate-y-1 text-xs font-bold uppercase"
+                                                    >
+                                                        Unblock
+                                                    </button>
+                                                </div>
+                                            ))}
+                                        </>
+                                    )}
+                                </div>
+                            )}
+                        </motion.div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
 
             {/* Main Content Area: Messages */}
             <main className="flex-1 overflow-y-auto p-2 md:p-4 bg-[radial-gradient(#000_1px,transparent_1px)] [background-size:16px_16px] z-10 relative">
@@ -202,7 +439,7 @@ const Home = () => {
                                 </div>
 
                                 {/* Content Display */}
-                                <div className="flex-1 min-w-0 pr-12">
+                                <div className="flex-1 min-w-0">
                                     {msg.type === 'text' ? (
                                         <div className="font-mono whitespace-pre-wrap break-words leading-relaxed">
                                             {msg.content}
@@ -226,7 +463,7 @@ const Home = () => {
                                 </div>
 
                                 {/* Message Actions */}
-                                <div className="flex md:flex-col gap-2 md:absolute md:top-4 md:right-4">
+                                <div className="flex-none flex md:flex-col gap-2">
                                     <button 
                                         onClick={() => handleCopy(msg.type === 'text' ? msg.content : msg.fileUrl, msg._id)}
                                         className="p-2 border-2 border-black hover:bg-neo-green hover:shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] transition-all bg-white"
@@ -234,13 +471,15 @@ const Home = () => {
                                     >
                                         {copiedId === msg._id ? <Check size={16} /> : <Copy size={16} />}
                                     </button>
-                                    <button 
-                                        onClick={() => handleDelete(msg._id)}
-                                        className="p-2 border-2 border-black hover:bg-neo-pink hover:shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] transition-all bg-white"
-                                        title="Delete"
-                                    >
-                                        <Trash2 size={16} />
-                                    </button>
+                                    {(userRole === 'admin' || userRole === 'editor') && (
+                                        <button 
+                                            onClick={() => handleDelete(msg._id)}
+                                            className="p-2 border-2 border-black hover:bg-neo-pink hover:shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] transition-all bg-white"
+                                            title="Delete"
+                                        >
+                                            <Trash2 size={16} />
+                                        </button>
+                                    )}
                                 </div>
                             </motion.div>
                         ))}
@@ -250,6 +489,7 @@ const Home = () => {
             </main>
 
             {/* Input & Upload Area */}
+            {userRole !== 'viewer' && (
             <div className="flex-none p-4 md:p-6 bg-white border-t-4 border-black z-30 shadow-[0_-4px_10px_rgba(0,0,0,0.1)]">
                 <div className="max-w-4xl mx-auto">
                     {file && (
@@ -319,6 +559,62 @@ const Home = () => {
                     </div>
                 </div>
             </div>
+            )}
+
+            {/* QR Share Modal */}
+            <AnimatePresence>
+                {isQRModalOpen && (
+                    <motion.div 
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[100] flex items-center justify-center p-4"
+                    >
+                        <motion.div 
+                            initial={{ scale: 0.9, y: 20 }}
+                            animate={{ scale: 1, y: 0 }}
+                            exit={{ scale: 0.9, y: 20 }}
+                            className="bg-white border-4 border-black p-6 w-full max-w-sm shadow-[8px_8px_0px_0px_rgba(0,0,0,1)]"
+                        >
+                            <div className="flex justify-between items-center mb-6 border-b-4 border-black pb-2">
+                                <h1 className="text-xl font-display uppercase tracking-wider">SHARE CONNECTION</h1>
+                                <button onClick={() => setIsQRModalOpen(false)} className="hover:rotate-90 transition-transform">
+                                    <X size={24} />
+                                </button>
+                            </div>
+                            
+                            <div className="flex flex-col items-center gap-6">
+                                <div className="p-4 border-4 border-black bg-white shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
+                                    <QRCodeSVG 
+                                        value={serverUrl || window.location.origin} 
+                                        size={200}
+                                        level="H"
+                                        includeMargin={true}
+                                    />
+                                </div>
+                                
+                                <div className="text-center space-y-2 w-full">
+                                    <p className="text-xs font-bold uppercase tracking-widest text-gray-400">Scan to Connect Instantly</p>
+                                    <div className="bg-gray-100 p-2 font-mono text-[10px] break-all border-2 border-dashed border-gray-300">
+                                        {serverUrl || window.location.origin}
+                                    </div>
+                                    <button 
+                                        onClick={() => {
+                                            navigator.clipboard.writeText(serverUrl || window.location.origin);
+                                            setCopiedId('url');
+                                            setTimeout(() => setCopiedId(null), 2000);
+                                        }}
+                                        className="w-full mt-4 flex items-center justify-center gap-2 bg-neo-blue text-white py-2 font-bold uppercase tracking-widest text-xs neo-shadow hover:translate-y-1 hover:shadow-none transition-all"
+                                    >
+                                        {copiedId === 'url' ? <Check size={16} /> : <Copy size={16} />}
+                                        {copiedId === 'url' ? 'COPIED!' : 'COPY URL'}
+                                    </button>
+                                </div>
+                            </div>
+                        </motion.div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
         </div>
     );
 };
